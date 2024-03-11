@@ -13,6 +13,7 @@ import ctypes
 # Define BPF program
 bpf_program_socket = """
 #include <uapi/linux/ptrace.h>
+#include <linux/tcp.h>
 #include <net/sock.h>
 #include <bcc/proto.h>
 #include <linux/sched.h>
@@ -26,15 +27,21 @@ struct data_t {
     u16 type;
     u16 state;
     u16 protocol;
+    u32 saddrr;
+    u32 daddrr;
     u64 saddr[2];
     u64 daddr[2];
     u64 sport; // source-listenign port
     u64 dport;
     u16 inner_state;
-
+    u64 ts_us;
+    u64 rx_b;
+    u64 tx_b;
+    u64 span_us;
 };
 BPF_HASH(currsock, u64, struct socket *);
-
+BPF_HASH(currtcp, u64, struct sock *);
+BPF_HASH(birth, struct sock * , u64);
 
 BPF_PERF_OUTPUT(ipv4events);
 BPF_PERF_OUTPUT(ipv6events);
@@ -44,7 +51,7 @@ int new_ipv4_socket_entry(struct pt_regs *ctx, struct net *net, struct socket *s
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
     currsock.update(&pid_tgid, &sock);
-
+    u64 ts = bpf_ktime_get_ns();
     bpf_trace_printk("create ipv4 socket");
 
     data.pid = pid_tgid >> 32;
@@ -69,7 +76,6 @@ int new_ipv4_socket_entry(struct pt_regs *ctx, struct net *net, struct socket *s
     data.inner_state = 0;
     
     ipv4events.perf_submit(ctx, &data, sizeof(data));
-
     
     return 0;
 }
@@ -135,6 +141,8 @@ int new_ipv6_socket_entry(struct pt_regs *ctx, struct net *net, struct socket *s
     struct data_t data = {};
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
+    u64 ts = bpf_ktime_get_ns();
+
     currsock.update(&pid_tgid, &sock);
 
     bpf_trace_printk("create ipv6 socket");
@@ -530,7 +538,7 @@ int connect_tcp_entry(struct pt_regs *ctx, struct socket *sock) {
     struct data_t data = {};
 
 
-    bpf_trace_printk("connect ipv4 socket");
+    
 
 
 
@@ -544,7 +552,7 @@ int connect_tcp_entry(struct pt_regs *ctx, struct socket *sock) {
 
     data.family = sock->sk->sk_family;
     
-
+    bpf_trace_printk("connect %d socket",data.family);
     data.state = sock->sk->sk_state;
     data.type = sock->sk->sk_type;
     data.protocol = sock->sk->sk_protocol;
@@ -865,39 +873,54 @@ int accept_return(struct pt_regs *ctx) {
 
 """
 
+"""format:
+    field:unsigned short common_type;   offset:0;   size:2; signed:0;
+    field:unsigned char common_flags;   offset:2;   size:1; signed:0;
+    field:unsigned char common_preempt_count;   offset:3;   size:1;signed:0;
+    field:int common_pid;   offset:4;   size:4; signed:1;
+
+    field:const void * skaddr;  offset:8;   size:8; signed:0;
+    field:int oldstate; offset:16;  size:4; signed:1;
+    field:int newstate; offset:20;  size:4; signed:1;
+    field:__u16 sport;  offset:24;  size:2; signed:0;
+    field:__u16 dport;  offset:26;  size:2; signed:0;
+    field:__u16 family; offset:28;  size:2; signed:0;
+    field:__u16 protocol;   offset:30;  size:2; signed:0;
+    field:__u8 saddr[4];    offset:32;  size:4; signed:0;
+    field:__u8 daddr[4];    offset:36;  size:4; signed:0;
+    field:__u8 saddr_v6[16];    offset:40;  size:16;    signed:0;
+    field:__u8 daddr_v6[16];    offset:56;  size:16;    signed:0;"""
 bpf_program_tracepoint = """
 
+struct id_t {
+    u32 pid;
+    char task [TASK_COMM_LEN];
+};
+BPF_HASH(whoami, struct sock *, struct id_t);
 TRACEPOINT_PROBE(sock, inet_sock_set_state)
 {
     
-    bpf_trace_printk("error return bind ipv6 socket %d", args);
-    if (args->protocol != IPPROTO_TCP)
+    struct data_t data = {};
+    
+    bpf_trace_printk("sock set state");
+    if (args->protocol != IPPROTO_TCP){
+        bpf_trace_printk("%d", args->protocol);
         return 0;
+    }
+    u64 pid_tgid = bpf_get_current_pid_tgid();
 
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-    // sk is mostly used as a UUID, and for two tcp stats:
     struct sock *sk = (struct sock *)args->skaddr;
 
-    // lport is either used in a filter here, or later
-    u16 lport = args->sport;
-    FILTER_LPORT
 
-    // dport is either used in a filter here, or later
-    u16 dport = args->dport;
-    FILTER_DPORT
-
-    /*
-     * This tool includes PID and comm context. It's best effort, and may
-     * be wrong in some situations. It currently works like this:
-     * - record timestamp on any state < TCP_FIN_WAIT1
-     * - cache task context on:
-     *       TCP_SYN_SENT: tracing from client
-     *       TCP_LAST_ACK: client-closed from server
-     * - do output on TCP_CLOSE:
-     *       fetch task context if cached, or use current task
-     */
-
-    // capture birth time
+    data.sport = args->sport;
+    data.dport = args->dport;
+    data.pid = pid_tgid >> 32;
+    u32 pid = pid_tgid >> 32;
+    data.tgid = pid_tgid;
+    u64 ts = bpf_ktime_get_ns();
+    bpf_trace_printk("som v tracepointe a pid %d", data.pid);
+    bpf_trace_printk("som v tracepointe a stav %d", args->newstate);
+    
     if (args->newstate < TCP_FIN_WAIT1) {
         /*
          * Matching just ESTABLISHED may be sufficient, provided no code-path
@@ -912,96 +935,139 @@ TRACEPOINT_PROBE(sock, inet_sock_set_state)
         birth.update(&sk, &ts);
     }
 
-    // record PID & comm on SYN_SENT
+
     if (args->newstate == TCP_SYN_SENT || args->newstate == TCP_LAST_ACK) {
         // now we can PID filter, both here and a little later on for CLOSE
-        FILTER_PID
         struct id_t me = {.pid = pid};
         bpf_get_current_comm(&me.task, sizeof(me.task));
         whoami.update(&sk, &me);
-    }
+        bpf_trace_printk("som v tracepointe a pid %d", data.pid);
 
+    }
     if (args->newstate != TCP_CLOSE)
         return 0;
-
     // calculate lifespan
     u64 *tsp, delta_us;
     tsp = birth.lookup(&sk);
+    bpf_trace_printk("som v tracepointe v close a pid %d", data.pid);
+
     if (tsp == 0) {
-        whoami.delete(&sk);     // may not exist
+        whoami.delete(&sk);
         return 0;               // missed create
     }
     delta_us = (bpf_ktime_get_ns() - *tsp) / 1000;
     birth.delete(&sk);
+    data.inner_state = 100;
 
-    // fetch possible cached data, and filter
     struct id_t *mep;
     mep = whoami.lookup(&sk);
     if (mep != 0)
-        pid = mep->pid;
-    FILTER_PID
-
-    u16 family = args->family;
-    FILTER_FAMILY
-
-    // get throughput stats. see tcp_get_info().
+        data.pid = mep->pid;
+    bpf_trace_printk("som v tracepointe v close a pid %d", data.pid);
+    if (mep == 0) {
+            bpf_get_current_comm(&data.comm, sizeof(data.comm));
+        } else {
+            bpf_probe_read_kernel(&data.comm, sizeof(data.comm), (void *)mep->task);
+        }
     u64 rx_b = 0, tx_b = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
-
+    bpf_trace_printk("som v tracepointe v close a pfamily %d, %d", data.family, data.family == AF_INET);
     if (args->family == AF_INET) {
-        struct ipv4_data_t data4 = {};
-        data4.span_us = delta_us;
-        data4.rx_b = rx_b;
-        data4.tx_b = tx_b;
-        data4.ts_us = bpf_ktime_get_ns() / 1000;
-        __builtin_memcpy(&data4.saddr, args->saddr, sizeof(data4.saddr));
-        __builtin_memcpy(&data4.daddr, args->daddr, sizeof(data4.daddr));
-        // a workaround until data4 compiles with separate lport/dport
-        data4.ports = dport + ((0ULL + lport) << 32);
-        data4.pid = pid;
-
-        if (mep == 0) {
-            bpf_get_current_comm(&data4.task, sizeof(data4.task));
-        } else {
-            bpf_probe_read_kernel(&data4.task, sizeof(data4.task), (void *)mep->task);
-        }
-        ipv4_events.perf_submit(args, &data4, sizeof(data4));
+        data.span_us = delta_us;
+        data.rx_b = rx_b;
+        data.tx_b = tx_b;
+        data.ts_us = bpf_ktime_get_ns() / 1000;
+        __builtin_memcpy(data.saddr, args->saddr, sizeof(data.saddrr));
+        __builtin_memcpy(data.daddr, args->daddr, sizeof(data.daddrr));
+        ipv4events.perf_submit(args, &data, sizeof(data));
 
     } else /* 6 */ {
-        struct ipv6_data_t data6 = {};
-        data6.span_us = delta_us;
-        data6.rx_b = rx_b;
-        data6.tx_b = tx_b;
-        data6.ts_us = bpf_ktime_get_ns() / 1000;
-        __builtin_memcpy(&data6.saddr, args->saddr_v6, sizeof(data6.saddr));
-        __builtin_memcpy(&data6.daddr, args->daddr_v6, sizeof(data6.daddr));
-        // a workaround until data6 compiles with separate lport/dport
-        data6.ports = dport + ((0ULL + lport) << 32);
-        data6.pid = pid;
-        if (mep == 0) {
-            bpf_get_current_comm(&data6.task, sizeof(data6.task));
-        } else {
-            bpf_probe_read_kernel(&data6.task, sizeof(data6.task), (void *)mep->task);
-        }
-        ipv6_events.perf_submit(args, &data6, sizeof(data6));
-    }
+        data.span_us = delta_us;
+        data.rx_b = rx_b;
+        data.tx_b = tx_b;
+        data.ts_us = bpf_ktime_get_ns() / 1000;
+        __builtin_memcpy(&data.saddrr, args->saddr_v6, sizeof(data.saddrr));
+        __builtin_memcpy(&data.daddrr, args->daddr_v6, sizeof(data.daddrr));
 
-    if (mep != 0)
-        whoami.delete(&sk);
+        ipv6events.perf_submit(args, &data, sizeof(data));
+    }
+    return 0;
+}
+
+"""
+
+
+bpf_program_tcp = """
+
+int tcp_connect_entry(struct pt_regs *ctx, struct sock *sk)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = pid_tgid;
+    currtcp.update(&pid_tgid, &sk);
+    bpf_trace_printk("tcp connect entry %d", tid);
 
     return 0;
 }
 
+int tcp_connect_return(struct pt_regs *ctx)
+{
+    struct data_t data = {};
+    int ret = PT_REGS_RC(ctx);
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = pid_tgid;
+    bpf_trace_printk("tcp connect return %d", tid);
+    struct sock **skpp;
+    skpp = currtcp.lookup(&pid_tgid);
+    if (skpp == 0) {
+    bpf_trace_printk("tcp connect return F %d", tid);
+        return 0;   // missed entry
+    }
+    if (ret != 0) {
+        // failed to send SYNC packet, may not have populated
+        // socket __sk_common.{skc_rcv_saddr, ...}
+        bpf_trace_printk("tcp connect return F %d, %d", tid, ret);
+        currtcp.delete(&pid_tgid);
+        return 0;
+    }
+    struct sock *skp = *skpp;
+    u16 lport = skp->__sk_common.skc_num;
+    u16 dport = skp->__sk_common.skc_dport;
+    data.family = skp->sk_family;
+    data.sport = lport;
+    data.dport = ntohs(dport);
+    data.pid = pid;
+    data.tgid = tid;
+    data.inner_state = 1000;
 
+    if (data.family == AF_INET) {
+        data.saddr[0] = skp->__sk_common.skc_rcv_saddr;
+        data.daddr[0] = skp->__sk_common.skc_daddr;
+        ipv4events.perf_submit(ctx, &data, sizeof(data));
+
+    }
+    else if (data.family == AF_INET6) {
+        bpf_probe_read_kernel(data.saddr, sizeof(data.saddr),
+                           skp->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+        bpf_probe_read_kernel(data.daddr, sizeof(data.daddr),
+                           skp->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
+        ipv6events.perf_submit(ctx, &data, sizeof(data));
+    }
+    return 0;
+
+}
 
 """
 
 if (BPF.tracepoint_exists("sock", "inet_sock_set_state")):
     bpf_program_socket += bpf_program_tracepoint
-else
+else:
+    print("Error, trace sock set state does not work")
 
+bpf_program_socket += bpf_program_tcp
 
 b = BPF(text=bpf_program_socket)
 if b.get_kprobe_functions(b"inet_create"):
@@ -1061,7 +1127,22 @@ else:
           " The kernel might be too old or the the function has been inlined.")
 
 
+if(b.get_kprobe_functions(b"tcp_v4_connect")):
 
+    b.attach_kprobe(event="tcp_v4_connect", fn_name="tcp_connect_entry")
+
+    b.attach_kretprobe(event="tcp_v4_connect", fn_name="tcp_connect_return")
+else:
+    print("ERROR: tcp_v4_connect kernel not found or traceable."
+          " The kernel might be too old or the the function has been inlined.")
+
+if(b.get_kprobe_functions(b"tcp_v6_connect")):
+
+    b.attach_kprobe(event="tcp_v6_connect", fn_name="tcp_connect_entry")
+    b.attach_kretprobe(event="tcp_v6_connect", fn_name="tcp_connect_return")
+else:
+    print("ERROR: tcp_v4_connect kernel not found or traceable."
+          " The kernel might be too old or the the function has been inlined.")
 
 
 type_dict = {
@@ -1128,7 +1209,7 @@ with open(log_file_path, "w") as log_file:
     log_file.write("PID, TGID\n")
 
     def print_ipv6_event(cpu, data, size):
-        event = b["ipv4events"].event(data)
+        event = b["ipv6events"].event(data)
         print(f"PID: {event.pid}, TGID: {event.tgid},COMM: {event.comm},FAMILY: {family_dict.get(event.family,'UNKNOWN: ' + str(event.family))},"
             f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
             f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
@@ -1140,12 +1221,19 @@ with open(log_file_path, "w") as log_file:
 
 
     def print_ipv4_event(cpu, data, size):
-        event = b["ipv6events"].event(data)
-        print(f"PID: {event.pid}, TGID: {event.tgid},COMM: {event.comm},FAMILY: {family_dict.get(event.family,'UNKNOWN: ' + str(event.family))},"
-            f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
-            f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
-            f"SADDR: {inet_ntop(AF_INET, pack('I', event.saddr[0]))}.DADDR: {inet_ntop(AF_INET, pack('I', event.daddr[0]))},SPORT: {event.sport},"
-            f"DPORT: {event.dport}, INNER STATE: {event.inner_state}")
+        event = b["ipv4events"].event(data)
+        try:
+            print(f"PID: {event.pid}, TGID: {event.tgid},COMM: {event.comm},FAMILY: {family_dict.get(event.family,'UNKNOWN: ' + str(event.family))},"
+                f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
+                f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
+                f"SADDR: {inet_ntop(AF_INET, pack('I', event.saddr[0]))}.DADDR: {inet_ntop(AF_INET, pack('I', event.daddr[0]))},SPORT: {event.sport},"
+                f"DPORT: {event.dport}, INNER STATE: {event.inner_state}")
+        except:
+            print(f"SKAPPID: {event.pid}, TGID: {event.tgid},COMM: {event.comm},FAMILY: {family_dict.get(event.family,'UNKNOWN: ' + str(event.family))},"
+                f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
+                f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
+                f"SADDR: {inet_ntop(AF_INET, pack('I', event.saddrr))}.DADDR: {inet_ntop(AF_INET, pack('I', event.daddrr))},SPORT: {event.sport},"
+                f"DPORT: {event.dport}, INNER STATE: {event.inner_state}")
     
 # Print the packed data
         log_file.write(f"{event.pid}, {event.tgid}\n")
