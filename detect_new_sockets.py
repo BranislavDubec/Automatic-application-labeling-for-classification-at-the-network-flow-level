@@ -1062,6 +1062,46 @@ int tcp_connect_return(struct pt_regs *ctx)
 
 """
 
+bpf_program_retrans = """
+TRACEPOINT_PROBE(tcp, tcp_retransmit_skb)
+{
+    struct data_t data = {};
+    
+    bpf_trace_printk("retransmit tcp ");
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+
+
+    struct tcp_skb_cb *tcb;
+    u32 seq;
+
+    const struct sock *skp = (const struct sock *)args->skaddr;
+    const struct sk_buff *skb = (const struct sk_buff *)args->skbaddr;
+    data.sport = args->sport;
+    data.dport = args->dport;
+    data.state = skp->__sk_common.skc_state;
+    data.family = skp->__sk_common.skc_family;
+
+    seq = 0;
+    if (skb) {
+        /* macro TCP_SKB_CB from net/tcp.h */
+        tcb = ((struct tcp_skb_cb *)&((skb)->cb[0]));
+        seq = tcb->seq;
+    }
+
+
+    if (family == AF_INET) {
+        __builtin_memcpy(&data.saddr, args->saddr, sizeof(data.saddr));
+        __builtin_memcpy(&data.daddr, args->daddr, sizeof(data.daddr));
+        ipv4events.perf_submit(args, &data, sizeof(data));
+    } else if (family == AF_INET6) {
+        __builtin_memcpy(&data.saddr, args->saddr_v6, sizeof(data.saddr));
+        __builtin_memcpy(&data.daddr, args->daddr_v6, sizeof(data.daddr));
+        ipv6events.perf_submit(args, &data, sizeof(data));
+    }
+    return 0;
+}
+"""
 if (BPF.tracepoint_exists("sock", "inet_sock_set_state")):
     bpf_program_socket += bpf_program_tracepoint
 else:
