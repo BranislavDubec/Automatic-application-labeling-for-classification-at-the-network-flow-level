@@ -230,6 +230,45 @@ int new_ipv6_socket_return(struct pt_regs *ctx) {
     return 0;
 }
 
+int sendmsg_socket_entry(struct pt_regs *ctx, struct socket *sock, struct msghdr *msg, size_t size){
+    
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    bpf_trace_printk("sendmsg socket pid: %d", pid_tgid >> 32);
+    bpf_trace_printk("sendmsg socket size: %d", size);
+
+    return 0;
+}
+int sendmsg_socket_return(struct pt_regs *ctx){
+    
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    bpf_trace_printk("return sendmsg socket pid: %d", pid_tgid >> 32);
+    
+        int ret = PT_REGS_RC(ctx);
+            bpf_trace_printk("return sendmsg socket size: %d", ret);
+    return 0;
+
+}
+int recvmsg_socket_entry(struct pt_regs *ctx, struct socket *sock, struct msghdr *msg, size_t size){
+    
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    bpf_trace_printk("recvmsg socket pid: %d", pid_tgid >> 32);
+    bpf_trace_printk("recvmsg socket size: %d", size);
+    return 0;
+
+
+}
+int recvmsg_socket_return(struct pt_regs *ctx){
+    
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    bpf_trace_printk("return recvmsg socket pid: %d", pid_tgid >> 32);
+    
+        int ret = PT_REGS_RC(ctx);
+            bpf_trace_printk("return recvmsg socket size: %d", ret);
+                return 0;
+
+
+}
+
 int bind_ipv4_socket_entry(struct pt_regs *ctx, struct socket *sock) {
     struct data_t data = {};
 
@@ -871,6 +910,16 @@ int accept_return(struct pt_regs *ctx) {
     return 0;
 }
 
+
+int release_socket(struct pt_regs *ctx, struct socket *sock){
+     bpf_trace_printk("release socket");
+
+
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    bpf_trace_printk("release socket %d", pid_tgid >> 32);
+    return 0;
+}
 """
 
 """format:
@@ -1185,6 +1234,29 @@ else:
           " The kernel might be too old or the the function has been inlined.")
 
 
+if(b.get_kprobe_functions(b"inet_sendmsg")):
+    b.attach_kprobe(event="inet_sendmsg", fn_name="sendmsg_socket_entry")
+    b.attach_kretprobe(event="inet_sendmsg", fn_name="sendmsg_socket_return")
+else:
+    print("ERROR: inet_listen kernel not found or traceable."
+          " The kernel might be too old or the the function has been inlined.")
+
+
+if(b.get_kprobe_functions(b"inet_recvmsg")):
+    b.attach_kprobe(event="inet_recvmsg", fn_name="recvmsg_socket_entry")
+    b.attach_kretprobe(event="inet_recvmsg", fn_name="recvmsg_socket_return")
+else:
+    print("ERROR: inet_listen kernel not found or traceable."
+          " The kernel might be too old or the the function has been inlined.")
+
+
+if(b.get_kprobe_functions(b"inet_release")):
+    b.attach_kprobe(event="inet_release", fn_name="release_socket")
+else:
+    print("ERROR: inet_listen kernel not found or traceable."
+          " The kernel might be too old or the the function has been inlined.")
+
+
 type_dict = {
     1: "SOCK_STREAM",    # TCP
     2: "SOCK_DGRAM",     # UDP
@@ -1254,7 +1326,8 @@ with open(log_file_path, "w") as log_file:
             f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
             f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
             f"SADDR: {inet_ntop(AF_INET6, event.saddr)}.DADDR: {inet_ntop(AF_INET6, event.daddr)},SPORT: {event.sport},"
-            f"DPORT: {event.dport}, INNER STATE: {event.inner_state}")
+            f"DPORT: {event.dport}, INNER STATE: {event.inner_state}, bytes_received: {event.rx_b}, bytes_acked: {event.tx_b},"
+            f"timestamp: {event.span_us}")
 
 # Print the packed data
         log_file.write(f"{event.pid}, {event.tgid}\n")
@@ -1267,13 +1340,15 @@ with open(log_file_path, "w") as log_file:
                 f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
                 f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
                 f"SADDR: {inet_ntop(AF_INET, pack('I', event.saddr[0]))}.DADDR: {inet_ntop(AF_INET, pack('I', event.daddr[0]))},SPORT: {event.sport},"
-                f"DPORT: {event.dport}, INNER STATE: {event.inner_state}")
+                f"DPORT: {event.dport}, INNER STATE: {event.inner_state},  bytes_received: {event.rx_b}, bytes_acked: {event.tx_b},"
+                f"timestamp: {event.span_us}")
         except:
             print(f"SKAPPID: {event.pid}, TGID: {event.tgid},COMM: {event.comm},FAMILY: {family_dict.get(event.family,'UNKNOWN: ' + str(event.family))},"
                 f"TYPE: {type_dict.get(event.type, 'UNKNOWN: ' + str(event.type))},STATE: {state_dict.get(event.state, 'UNKNOWN: ' + str(event.state))},"
                 f"PROTOCOL: {protocol_dict.get(event.protocol, 'UNKNOWN: ' + str(event.protocol))},"
                 f"SADDR: {inet_ntop(AF_INET, pack('I', event.saddrr))}.DADDR: {inet_ntop(AF_INET, pack('I', event.daddrr))},SPORT: {event.sport},"
-                f"DPORT: {event.dport}, INNER STATE: {event.inner_state}")
+                f"DPORT: {event.dport}, INNER STATE: {event.inner_state,  bytes_received: {event.rx_b}, bytes_acked: {event.tx_b},}"
+                f"timestamp: {event.span_us}")
     
 # Print the packed data
         log_file.write(f"{event.pid}, {event.tgid}\n")
