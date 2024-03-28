@@ -37,8 +37,43 @@ struct data_t {
     u64 ts_us;
     u64 rx_b;
     u64 tx_b;
-    u64 span_us;
+    u64 ts_us;
 };
+
+struct data_ipv4 {
+    u32 pid;
+    u32 tgid;
+    char comm[TASK_COMM_LEN];
+    u16 family;
+    u16 type;
+    u16 state;
+    u16 protocol;
+    u32 saddrr;
+    u32 daddrr;
+    
+    u16 sport; // source-listenign port
+    u16 dport;
+    u16 inner_state;
+    u64 ts_us;
+}
+
+struct data_ipv6 {
+    u32 pid;
+    u32 tgid;
+    char comm[TASK_COMM_LEN];
+    u16 family;
+    u16 type;
+    u16 state;
+    u16 protocol;
+    unsigned __int128 saddr;
+    unsigned __int128 daddr;
+    u16 sport; // source-listenign port
+    u16 dport;
+    u16 inner_state;
+    u64 ts_us;
+}
+
+
 BPF_HASH(currsock, u64, struct socket *);
 BPF_HASH(currtcp, u64, struct sock *);
 BPF_HASH(birth, struct sock * , u64);
@@ -939,6 +974,8 @@ int release_socket(struct pt_regs *ctx, struct socket *sock){
     field:__u8 daddr[4];    offset:36;  size:4; signed:0;
     field:__u8 saddr_v6[16];    offset:40;  size:16;    signed:0;
     field:__u8 daddr_v6[16];    offset:56;  size:16;    signed:0;"""
+
+
 bpf_program_tracepoint = """
 
 struct id_t {
