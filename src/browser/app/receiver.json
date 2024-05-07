@@ -1,0 +1,9 @@
+{
+    "name": "receiver",
+    "description": "Native messaging app",
+    "path": "/home/brano/Desktop/dp/Automatic-application-labeling-for-classification-at-the-network-flow-level/src/browser/app/receiver.py",
+    "type": "stdio",
+    "allowed_extensions": [ 
+        "receiver@example.com" 
+    ]
+}

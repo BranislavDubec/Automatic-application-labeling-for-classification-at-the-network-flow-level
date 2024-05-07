@@ -1,3 +1,13 @@
+/*
+    Contains definition of structures for IPv4 and IPv6 events.
+    Declare hash maps to store values of structs socket, sock and msghdr.
+
+    __author__ = Branislav Dubec
+    __version__ = 1.0.5
+*/
+
+
+
 #ifndef GET_FLOW_KEY_H
 #define GET_FLOW_KEY_H
 
@@ -15,14 +25,12 @@ struct data_ipv4 {
     char comm[TASK_COMM_LEN];
     u16 family;
     u16 type;
-    u16 state;
+    u16 state; // TCP state
     u16 protocol;
     u32 saddr;
     u32 daddr;
     u16 sport; // source-listenign port
     u16 dport;
-    u16 inner_state;
-    u64 ts_us;
 };
 
 struct data_ipv6 {
@@ -31,24 +39,20 @@ struct data_ipv6 {
     char comm[TASK_COMM_LEN];
     u16 family;
     u16 type;
-    u16 state;
+    u16 state; // TCP state
     u16 protocol;
     unsigned __int128 saddr;
     unsigned __int128 daddr;
     u16 sport; // source-listenign port
     u16 dport;
-    u16 inner_state;
-    u64 ts_us;
 };
 
-int new_ipv4_socket_entry(struct pt_regs *ctx, struct net *net, struct socket *sock);
-int new_ipv4_socket_return(struct pt_regs *ctx);
-int new_ipv6_socket_entry(struct pt_regs *ctx, struct net *net, struct socket *sock, int protocol, int kern);
-int new_ipv6_socket_return(struct pt_regs *ctx);
-int tcp_connect_entry(struct pt_regs *ctx, struct sock *sk);
-int tcp_connect_return(struct pt_regs *ctx);
-int connect_udp_entry(struct pt_regs *ctx, struct socket *sock, struct sockaddr *uaddr, int addr_len, int flags);
-int connect_udp_return(struct pt_regs *ctx, struct socket *sock, struct sockaddr *uaddr, int addr_len, int flags);
+BPF_HASH(new_socket, u64, struct socket *);
+BPF_HASH(new_sock, u64, struct sock *);
+BPF_HASH(new_msg, u64, struct msghdr *);
+
+BPF_PERF_OUTPUT(ipv4events);
+BPF_PERF_OUTPUT(ipv6events);
 
 
 
