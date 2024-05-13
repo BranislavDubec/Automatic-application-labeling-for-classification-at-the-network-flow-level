@@ -139,8 +139,8 @@ functions_to_events = {
 
 
 filter_labels = ["systemd-resolve"]
-log_file_path = "../logs/socket_log.csv"
-no_match_file_path = "../logs/no_match.json"
+log_file_path = "logs/socket_log.csv"
+no_match_file_path = "logs/no_match.json"
 pipe_path = "/tmp/firefox_url_pipe"
 
 headers = [
