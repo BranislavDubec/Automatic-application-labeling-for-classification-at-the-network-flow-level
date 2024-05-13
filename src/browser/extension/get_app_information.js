@@ -9,17 +9,18 @@ function onError(error) {
 }
 
 function logRequest(details) {
-    if (!details.fromCache){
+  if (!details.fromCache){
       let sendObject = {
         url: details.url,
         ip: details.ip
       }
       port.postMessage(details);
-    }
+    
   }
-
+}
 browser.webRequest.onResponseStarted.addListener(
   logRequest,
   {urls: ["<all_urls>"]}
 );
+
 
